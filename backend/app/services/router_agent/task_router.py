@@ -166,14 +166,35 @@ class TaskRouter:
             }]
     
     def _create_execution_plan(self, tasks: List[Dict]) -> Dict[str, List[int]]:
-        """실행 계획 수립 (병렬/순차 그룹핑)"""
-        plan = {}
+        """실행 계획 수립 (병렬/순차 그룹핑) - docs_agent는 마지막에 실행"""
+        # docs_agent와 다른 태스크 분리
+        docs_tasks = []
+        other_tasks = []
         
         for task in tasks:
-            group = task.get("parallel_group", 0)
+            if task.get("agent") in ["docs_agent", "create_document_agent"]:
+                docs_tasks.append(task)
+            else:
+                other_tasks.append(task)
+        
+        plan = {}
+        
+        # 먼저 docs_agent가 아닌 태스크들 처리
+        for task in other_tasks:
+            group = task.get("parallel_group", task["id"])
             if group not in plan:
                 plan[group] = []
             plan[group].append(task["id"])
+        
+        # docs_agent는 마지막 그룹으로 추가
+        if docs_tasks:
+            # 가장 큰 그룹 번호 찾기
+            max_group = max(plan.keys()) if plan else -1
+            docs_group = max_group + 1
+            
+            plan[docs_group] = []
+            for task in docs_tasks:
+                plan[docs_group].append(task["id"])
             
         return plan
     

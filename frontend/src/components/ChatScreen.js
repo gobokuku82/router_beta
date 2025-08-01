@@ -367,6 +367,47 @@ const ChatScreen = () => {
     }
   };
 
+  // 자동 실행을 위한 메시지 전송 함수
+  const sendAutoMessage = async (query, taskInfo = null) => {
+    const userMessage = {
+      type: taskInfo ? 'auto' : 'user',
+      content: query,
+      timestamp: new Date().toLocaleTimeString(),
+      taskInfo: taskInfo
+    };
+
+    const newMessages = [...messages, userMessage];
+    setMessages(newMessages);
+    setIsLoading(true);
+    
+    try {
+      const response = await fetch('http://localhost:8000/api/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          session_id: sessionId,
+          query: query
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      console.log('자동 실행 응답:', data);
+      
+      // 응답 처리 로직을 별도 함수로 분리
+      await processResponse(data, newMessages);
+      
+    } catch (error) {
+      console.error('자동 메시지 전송 오류:', error);
+      setIsLoading(false);
+    }
+  };
+
   const sendMessage = async () => {
     if (!inputValue.trim() || isLoading) return;
 
@@ -406,23 +447,42 @@ const ChatScreen = () => {
       }
 
       const data = await response.json();
+      await processResponse(data, newMessages);
       
-      // 디버깅용 로그
-      console.log('API 응답 데이터:', data);
-      if (data.type === 'multi') {
-        console.log('멀티 태스크 응답 구조:');
-        console.log('- response:', data.response);
-        console.log('- tasks:', data.tasks);
-        console.log('- detailed_results:', data.detailed_results);
-        if (data.response && data.response.steps) {
-          console.log('- response.steps:', data.response.steps);
-        }
+    } catch (error) {
+      console.error('API 요청 오류:', error);
+      const errorMessage = {
+        type: 'bot',
+        content: `❌ 연결 오류: ${error.message}\n\n백엔드 서버가 실행 중인지 확인해주세요. (http://localhost:8000)`,
+        timestamp: new Date().toLocaleTimeString(),
+        agent: 'System'
+      };
+      const finalMessages = [...newMessages, errorMessage];
+      setMessages(finalMessages);
+      saveMessageToHistory(finalMessages);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // 응답 처리를 별도 함수로 분리
+  const processResponse = async (data, newMessages) => {
+    // 디버깅용 로그
+    console.log('API 응답 데이터:', data);
+    if (data.type === 'multi') {
+      console.log('멀티 태스크 응답 구조:');
+      console.log('- response:', data.response);
+      console.log('- tasks:', data.tasks);
+      console.log('- detailed_results:', data.detailed_results);
+      if (data.response && data.response.steps) {
+        console.log('- response.steps:', data.response.steps);
       }
-      
-      let botResponseContent = '';
-      let responseAgent = 'Router Agent';
-      
-      if (data.success) {
+    }
+    
+    let botResponseContent = '';
+    let responseAgent = 'Router Agent';
+    
+    if (data.success) {
         // Router 에이전트에서 사용자 선택이 필요한 경우
         if (data.needs_user_selection) {
           const selectionMessage = {
@@ -650,38 +710,50 @@ const ChatScreen = () => {
         checkCurrentAgent(sessionId);
       }
 
-      // 남은 작업이 있으면 사용자에게 안내
+      // 남은 작업이 있으면 처리
       if (data.remaining_tasks && data.remaining_tasks.length > 0) {
-        console.log(`남은 작업 ${data.remaining_tasks.length}개`);
+        console.log(`남은 작업 ${data.remaining_tasks.length}개, auto_execute: ${data.auto_execute}`);
         
-        // 남은 작업 안내 메시지
-        setTimeout(() => {
-          const remainingMessage = {
+        if (data.auto_execute) {
+          // 자동 실행
+          setTimeout(async () => {
+            const nextTask = data.remaining_tasks[0];
+            const nextIndex = data.current_task_index + 1;
+            
+            // 진행 상태 메시지
+            const progressMessage = {
+              type: 'system',
+              content: `📊 총 ${data.total_tasks}개 작업 중 ${data.current_task_index}번째 완료\n\n🔄 ${nextIndex}번째 작업 분석 중: ${nextTask.description}`,
+              timestamp: new Date().toLocaleTimeString()
+            };
+            
+            const messagesWithProgress = [...finalMessages, progressMessage];
+            setMessages(messagesWithProgress);
+            saveMessageToHistory(messagesWithProgress);
+            
+            // 다음 작업 자동 실행
+            await sendAutoMessage(nextTask.query, {
+              taskIndex: nextIndex,
+              totalTasks: data.total_tasks,
+              description: nextTask.description
+            });
+          }, 1500); // 1.5초 대기
+        } else {
+          // docs_agent가 마지막인 경우 수동 실행 안내
+          const docsMessage = {
             type: 'system',
-            content: `📋 총 ${data.total_tasks}개 작업 중 ${data.current_task_index}번째 완료\n\n남은 작업들:\n${data.remaining_tasks.map((task, idx) => `${idx + 1}. ${task.description}`).join('\n')}\n\n계속하려면 다음 질문을 입력해주세요.`,
+            content: `📋 총 ${data.total_tasks}개 작업 중 ${data.current_task_index}번째 완료\n\n📝 문서 생성 작업이 남아있습니다:\n${data.remaining_tasks.map((task, idx) => `${idx + 1}. ${task.description}`).join('\n')}\n\n문서 생성은 대화형 작업입니다. 준비되시면 계속 진행해주세요.`,
             timestamp: new Date().toLocaleTimeString()
           };
           
-          const messagesWithRemaining = [...finalMessages, remainingMessage];
-          setMessages(messagesWithRemaining);
-          saveMessageToHistory(messagesWithRemaining);
-        }, 500);
+          const messagesWithDocs = [...finalMessages, docsMessage];
+          setMessages(messagesWithDocs);
+          saveMessageToHistory(messagesWithDocs);
+        }
       }
-
-    } catch (error) {
-      console.error('API 요청 오류:', error);
-      const errorMessage = {
-        type: 'bot',
-        content: `❌ 연결 오류: ${error.message}\n\n백엔드 서버가 실행 중인지 확인해주세요. (http://localhost:8000)`,
-        timestamp: new Date().toLocaleTimeString(),
-        agent: 'System'
-      };
-      const finalMessages = [...newMessages, errorMessage];
-      setMessages(finalMessages);
-      saveMessageToHistory(finalMessages);
-    } finally {
-      setIsLoading(false);
     }
+    
+    setIsLoading(false);
   };
 
   // 에이전트 선택 처리 함수

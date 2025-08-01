@@ -298,6 +298,10 @@ async def chat(req: QueryRequest):
                         
                         session["messages"].append({"role": "assistant", "content": str(first_result)})
                         
+                        # docs_agent가 마지막 작업인지 확인
+                        is_last_docs = (len(remaining_tasks) == 1 and 
+                                      remaining_tasks[0].get("agent") in ["docs_agent", "create_document_agent"])
+                        
                         return {
                             "success": True,
                             "response": first_result,
@@ -305,7 +309,8 @@ async def chat(req: QueryRequest):
                             "type": "single",
                             "remaining_tasks": remaining_tasks,
                             "total_tasks": len(task_result["tasks"]),
-                            "current_task_index": 1
+                            "current_task_index": 1,
+                            "auto_execute": not is_last_docs  # docs_agent가 마지막이 아니면 자동 실행
                         }
                     else:
                         # detailed_results가 없으면 전체 응답 반환 (기존 방식)
